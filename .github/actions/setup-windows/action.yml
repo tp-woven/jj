@@ -7,12 +7,12 @@ runs:
     - name: Set up D:\ drive
       shell: pwsh
       run: |
-        Add-Content -Path $env:GITHUB_ENV RUSTUP_HOME=D:\.rustup
-        Add-Content -Path $env:GITHUB_ENV CARGO_HOME=D:\.cargo
+        #Add-Content -Path $env:GITHUB_ENV RUSTUP_HOME=D:\.rustup
+        #Add-Content -Path $env:GITHUB_ENV CARGO_HOME=D:\.cargo
         Add-Content -Path $env:GITHUB_ENV TEMP=D:\Temp
         Add-Content -Path $env:GITHUB_ENV TMP=D:\Temp
-        Add-Content -Path $env:GITHUB_PATH D:\.cargo\bin
-        Add-Content -Path $env:GITHUB_PATH D:\.install-action\bin
+        #Add-Content -Path $env:GITHUB_PATH D:\.cargo\bin
+        #Add-Content -Path $env:GITHUB_PATH D:\.install-action\bin
 
         New-Item -Path D:\ -Name Temp -ItemType directory
         # Copy the effective permissions without inheritance.
