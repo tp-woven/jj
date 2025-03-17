@@ -85,13 +85,24 @@ fn check_hfs_plus(dir: &Path) -> bool {
 }
 
 /// Returns true if the directory appears to support Windows short file names.
-fn check_vfat(dir: &Path) -> bool {
+fn check_short_file_names(dir: &Path) -> bool {
     let _test_file = tempfile::Builder::new()
         .prefix("vfattest-")
         .tempfile_in(dir)
         .unwrap();
     let short_name = "VFATTE~1";
     dir.join(short_name).try_exists().unwrap()
+}
+
+/// Returns true if the directory appears to ignore trailing dots.
+fn check_trailing_dots(dir: &Path) -> bool {
+    let test_file = tempfile::Builder::new()
+        .prefix("vfattest-")
+        .tempfile_in(dir)
+        .unwrap();
+    let mut trailing_dot_name = test_file.path().file_name().unwrap().to_owned();
+    trailing_dot_name.push(".");
+    dir.join(trailing_dot_name).try_exists().unwrap()
 }
 
 fn to_owned_path_vec(paths: &[&RepoPath]) -> Vec<RepoPathBuf> {
@@ -1969,23 +1980,27 @@ fn test_check_out_reserved_file_path_hfs_plus(file_path_str: &str) {
     }
 }
 
-#[test_case(".git/pwned", &["GIT~1/pwned", "GI2837~1/pwned"]; "root .git dir short name")]
-#[test_case(".jj/pwned", &["JJ~1/pwned", "JJ2E09~1/pwned"]; "root .jj dir short name")]
-#[test_case(".git/pwned", &[".GIT./pwned"]; "root .git dir trailing dots")]
-#[test_case(".jj/pwned", &[".JJ../pwned"]; "root .jj dir trailing dots")]
-#[test_case("sub/.git", &["sub/.GIT.."]; "sub .git file trailing dots")]
-#[test_case("sub/.jj", &["sub/.JJ."]; "sub .jj file trailing dots")]
+#[test_case(check_short_file_names, ".git/pwned", &["GIT~1/pwned", "GI2837~1/pwned"]; "root .git dir short name")]
+#[test_case(check_short_file_names, ".jj/pwned", &["JJ~1/pwned", "JJ2E09~1/pwned"]; "root .jj dir short name")]
+#[test_case(check_trailing_dots, ".git/pwned", &[".GIT./pwned"]; "root .git dir trailing dots")]
+#[test_case(check_trailing_dots, ".jj/pwned", &[".JJ../pwned"]; "root .jj dir trailing dots")]
+#[test_case(check_trailing_dots, "sub/.git", &["sub/.GIT.."]; "sub .git file trailing dots")]
+#[test_case(check_trailing_dots, "sub/.jj", &["sub/.JJ."]; "sub .jj file trailing dots")]
 // TODO: Add more weird patterns?
 // - https://en.wikipedia.org/wiki/8.3_filename
 // - See is_ntfs_dotgit() of Git and pathauditor of Mercurial
-fn test_check_out_reserved_file_path_vfat(vfat_path_str: &str, file_path_strs: &[&str]) {
+fn test_check_out_reserved_file_path_vfat(
+    check_affected: fn(&Path) -> bool,
+    disk_path_str: &str,
+    file_path_strs: &[&str],
+) {
     let mut test_workspace = TestWorkspace::init();
     let repo = &test_workspace.repo;
     let workspace_root = test_workspace.workspace.workspace_root().to_owned();
     std::fs::create_dir(workspace_root.join(".git")).unwrap();
-    let is_vfat = check_vfat(&workspace_root);
+    let is_affected = check_affected(&workspace_root);
 
-    let vfat_disk_path = workspace_root.join(vfat_path_str);
+    let disk_path = workspace_root.join(disk_path_str);
     let file_paths = file_path_strs
         .iter()
         .map(|&s| RepoPath::from_internal_string(s))
@@ -2001,7 +2016,7 @@ fn test_check_out_reserved_file_path_vfat(vfat_path_str: &str, file_path_strs: &
     let commit1 = commit_with_tree(repo.store(), tree1.id());
     let commit2 = commit_with_tree(repo.store(), tree2.id());
 
-    // Checkout should fail on VFAT-like fs.
+    // Checkout should fail in affected directories.
     let ws = &mut test_workspace.workspace;
     let result = ws.check_out(
         repo.op_id().clone(),
@@ -2009,15 +2024,15 @@ fn test_check_out_reserved_file_path_vfat(vfat_path_str: &str, file_path_strs: &
         &commit1,
         &CheckoutOptions::empty_for_test(),
     );
-    if is_vfat {
+    if is_affected {
         assert_matches!(result, Err(CheckoutError::ReservedPathComponent { .. }));
     } else {
         assert_matches!(result, Ok(_));
     }
 
     // Therefore, "pwned" file shouldn't be created.
-    if is_vfat {
-        assert!(!vfat_disk_path.exists());
+    if is_affected {
+        assert!(!disk_path.exists());
     }
     assert!(!workspace_root.join(".git").join("pwned").exists());
     assert!(!workspace_root.join(".jj").join("pwned").exists());
@@ -2028,9 +2043,9 @@ fn test_check_out_reserved_file_path_vfat(vfat_path_str: &str, file_path_strs: &
     let mut locked_ws = ws.start_working_copy_mutation().unwrap();
     locked_ws.locked_wc().reset(&commit1).unwrap();
     locked_ws.finish(repo.op_id().clone()).unwrap();
-    if is_vfat {
-        std::fs::create_dir_all(vfat_disk_path.parent().unwrap()).unwrap();
-        std::fs::write(&vfat_disk_path, "").unwrap();
+    if is_affected {
+        std::fs::create_dir_all(disk_path.parent().unwrap()).unwrap();
+        std::fs::write(&disk_path, "").unwrap();
     }
 
     // Check out empty tree, which tries to remove the file.
@@ -2040,15 +2055,15 @@ fn test_check_out_reserved_file_path_vfat(vfat_path_str: &str, file_path_strs: &
         &commit2,
         &CheckoutOptions::empty_for_test(),
     );
-    if is_vfat {
+    if is_affected {
         assert_matches!(result, Err(CheckoutError::ReservedPathComponent { .. }));
     } else {
         assert_matches!(result, Ok(_));
     }
 
-    // The existing file shouldn't be removed on VFAT-like fs.
-    if is_vfat {
-        assert!(vfat_disk_path.exists());
+    // The existing file shouldn't be removed in affected directories.
+    if is_affected {
+        assert!(disk_path.exists());
     }
 }
 
